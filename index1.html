@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local PDF Merger & Organizer</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load PDF-Lib for client-side PDF manipulation -->
+    <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .file-item {
+            cursor: grab;
+            transition: all 0.2s;
+        }
+        .file-item:active {
+            cursor: grabbing;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.2);
+            transform: translateY(-2px);
+        }
+        .drag-over {
+            border: 2px dashed #3b82f6 !important;
+            background-color: #eff6ff !important;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 sm:p-8">
+
+    <div class="w-full max-w-4xl mx-auto bg-white shadow-2xl rounded-xl p-6 md:p-10">
+        <header class="text-center mb-8">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-blue-700 mb-2">
+                Local PDF Merger & Organizer
+            </h1>
+            <p class="text-gray-500">Securely combine, reorder, and convert files to PDFs entirely in your browser. (No upload required!)</p>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <!-- Controls Column -->
+            <div class="lg:col-span-1 space-y-4">
+                <div class="p-4 border border-gray-200 rounded-xl bg-gray-50 shadow-inner space-y-3">
+                    <h2 class="text-xl font-semibold text-gray-800 border-b pb-2">Tools</h2>
+                    
+                    <button id="fileInputBtn" class="w-full p-3 rounded-lg font-bold text-white bg-green-600 hover:bg-green-700 transition shadow-md">
+                        Add Files (PDF, JPG, PNG)
+                    </button>
+                    <input type="file" id="fileInput" accept="image/*,.pdf" multiple class="hidden">
+
+                    <button id="mergeBtn" disabled class="w-full p-3 rounded-lg font-bold text-white bg-blue-400 transition shadow-md disabled:opacity-50">
+                        Merge & Download PDF
+                    </button>
+
+                    <button id="clearBtn" class="w-full p-3 rounded-lg font-bold text-gray-800 bg-red-100 hover:bg-red-200 transition shadow-md">
+                        Clear All
+                    </button>
+                </div>
+
+                <div class="p-4 bg-blue-50 border border-blue-200 rounded-xl text-sm">
+                    <p class="font-bold text-blue-800 mb-1">How it Works:</p>
+                    <p class="text-blue-700">All merging and processing (including image conversion) happens instantly on your device. Your documents never leave your browser.</p>
+                </div>
+            </div>
+
+            <!-- File List Column -->
+            <div class="lg:col-span-2">
+                <h2 class="text-xl font-semibold text-gray-800 mb-3">Documents to Merge (Drag to Reorder)</h2>
+                <div id="fileList" class="min-h-[200px] p-4 border-2 border-dashed border-gray-300 rounded-xl space-y-3 bg-white">
+                    <p id="placeholder" class="text-gray-500 text-center pt-10 italic">Drag and drop your PDF/Image files here, or click "Add Files".</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Global array to store file information and ArrayBuffers
+        let files = [];
+        let isMerging = false;
+
+        // --- Core Conversion Logic (New Feature) ---
+
+        /**
+         * Converts an image file (PNG/JPEG) into a single-page PDF ArrayBuffer.
+         * @param {File} fileObj - The file object (image).
+         * @returns {Promise<ArrayBuffer>} - The generated PDF ArrayBuffer.
+         */
+        async function convertImageToPdfBuffer(fileObj) {
+            const imageBuffer = await fileObj.arrayBuffer();
+            const pdfDoc = await PDFLib.PDFDocument.create();
+
+            let image;
+            let imageDimensions;
+
+            if (fileObj.type === 'image/jpeg' || fileObj.name.toLowerCase().endsWith('.jpg') || fileObj.name.toLowerCase().endsWith('.jpeg')) {
+                image = await pdfDoc.embedJpg(imageBuffer);
+                imageDimensions = image.size();
+            } else if (fileObj.type === 'image/png' || fileObj.name.toLowerCase().endsWith('.png')) {
+                image = await pdfDoc.embedPng(imageBuffer);
+                imageDimensions = image.size();
+            } else {
+                throw new Error("Unsupported image type.");
+            }
+
+            const page = pdfDoc.addPage([imageDimensions.width, imageDimensions.height]);
+            page.drawImage(image, {
+                x: 0,
+                y: 0,
+                width: imageDimensions.width,
+                height: imageDimensions.height,
+            });
+
+            return pdfDoc.save();
+        }
+        
+        // --- Utility Functions ---
+
+        function updateUI() {
+            const fileList = document.getElementById('fileList');
+            fileList.innerHTML = '';
+
+            if (files.length === 0) {
+                fileList.innerHTML = '<p id="placeholder" class="text-gray-500 text-center pt-10 italic">Drag and drop your PDF/Image files here, or click "Add Files".</p>';
+                document.getElementById('mergeBtn').disabled = true;
+                document.getElementById('mergeBtn').classList.replace('bg-blue-600', 'bg-blue-400');
+            } else {
+                files.forEach((file, index) => {
+                    fileList.appendChild(createFileItem(file, index));
+                });
+                document.getElementById('mergeBtn').disabled = isMerging || files.length < 2;
+                if (files.length >= 2 && !isMerging) {
+                    document.getElementById('mergeBtn').classList.replace('bg-blue-400', 'bg-blue-600');
+                } else {
+                     document.getElementById('mergeBtn').classList.replace('bg-blue-600', 'bg-blue-400');
+                }
+            }
+        }
+
+        function handleFileSelection(event) {
+            const fileObjects = event.target.files;
+            processFiles(fileObjects);
+            event.target.value = ''; // Clear input for re-selection
+        }
+
+        async function processFiles(fileObjects) {
+            if (!fileObjects || fileObjects.length === 0) return;
+
+            const filesToProcess = Array.from(fileObjects);
+            
+            for (const fileObj of filesToProcess) {
+                let buffer = null;
+                let isConverted = false;
+                
+                if (fileObj.type === 'application/pdf') {
+                    // 1. Native PDF
+                    buffer = await fileObj.arrayBuffer();
+                } else if (fileObj.type.startsWith('image/')) {
+                    // 2. Image Conversion
+                    try {
+                        buffer = await convertImageToPdfBuffer(fileObj);
+                        isConverted = true;
+                    } catch (error) {
+                        console.error(`Skipping ${fileObj.name}: Image conversion failed.`, error);
+                        continue;
+                    }
+                } else {
+                    console.warn(`Skipping file: ${fileObj.name} (Unsupported type: ${fileObj.type})`);
+                    continue;
+                }
+                
+                if (buffer) {
+                    files.push({
+                        name: fileObj.name,
+                        buffer: buffer,
+                        isConverted: isConverted
+                    });
+                }
+            }
+            updateUI();
+        }
+
+        // --- DOM Creation and Drag-and-Drop ---
+
+        function createFileItem(file, index) {
+            const item = document.createElement('div');
+            item.className = 'file-item flex items-center justify-between p-3 bg-white border border-gray-300 rounded-lg shadow-sm';
+            item.draggable = true;
+            item.dataset.index = index;
+
+            let iconColor = file.isConverted ? 'text-green-600' : 'text-red-500';
+            let tag = file.isConverted ? '<span class="text-xs font-semibold text-green-700 bg-green-100 px-2 py-0.5 rounded-full ml-2 flex-shrink-0">[CONVERTED]</span>' : '';
+
+            // Icon and Text
+            item.innerHTML = `
+                <div class="flex items-center space-x-3 overflow-hidden">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 ${iconColor} flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                        <path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm0 4a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1z" clip-rule="evenodd" />
+                    </svg>
+                    <span class="text-sm font-medium text-gray-700 truncate">${file.name}</span>
+                    ${tag}
+                </div>
+                <button data-index="${index}" class="remove-btn text-gray-400 hover:text-red-500 transition duration-150 flex-shrink-0 ml-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            `;
+            
+            // Add remove button listener
+            item.querySelector('.remove-btn').addEventListener('click', removeFile);
+            
+            // Add Drag and Drop listeners
+            item.addEventListener('dragstart', handleDragStart);
+            item.addEventListener('dragover', handleDragOver);
+            item.addEventListener('dragleave', handleDragLeave);
+            item.addEventListener('drop', handleDrop);
+
+            return item;
+        }
+
+        function removeFile(event) {
+            const index = parseInt(event.target.dataset.index);
+            if (!isNaN(index)) {
+                files.splice(index, 1);
+                updateUI();
+            }
+        }
+
+        // Drag handlers
+        function handleDragStart(e) {
+            e.target.classList.add('opacity-40');
+            e.dataTransfer.setData('text/plain', e.target.dataset.index);
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            if (e.target.classList.contains('file-item')) {
+                e.target.classList.add('drag-over');
+            }
+        }
+
+        function handleDragLeave(e) {
+            if (e.target.classList.contains('file-item')) {
+                e.target.classList.remove('drag-over');
+            }
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            const draggedIndex = parseInt(e.dataTransfer.getData('text/plain'));
+            const targetElement = e.target.closest('.file-item');
+            if (!targetElement) return;
+
+            const targetIndex = parseInt(targetElement.dataset.index);
+
+            if (isNaN(draggedIndex) || isNaN(targetIndex) || draggedIndex === targetIndex) return;
+
+            const draggedFile = files[draggedIndex];
+            
+            // Remove the file from its current position
+            files.splice(draggedIndex, 1);
+            
+            // Insert the file at the new position
+            files.splice(targetIndex, 0, draggedFile);
+
+            updateUI();
+        }
+
+        // Reset opacity after drop/cancel
+        document.getElementById('fileList').addEventListener('dragend', (e) => {
+            if (e.target.classList.contains('file-item')) {
+                e.target.classList.remove('opacity-40', 'drag-over');
+            }
+        });
+        document.getElementById('fileList').addEventListener('dragleave', (e) => {
+            if (e.target.classList.contains('file-item')) {
+                e.target.classList.remove('drag-over');
+            }
+        });
+        
+        // --- Core Merging Logic ---
+
+        async function mergePdfs() {
+            if (files.length < 2 || isMerging) return;
+            isMerging = true;
+            document.getElementById('mergeBtn').textContent = 'Merging...';
+            document.getElementById('mergeBtn').disabled = true;
+
+            try {
+                const pdfDoc = await PDFLib.PDFDocument.create();
+
+                for (const file of files) {
+                    // The buffer for both native PDFs and converted images is always a PDF ArrayBuffer here.
+                    const externalPdf = await PDFLib.PDFDocument.load(file.buffer);
+                    
+                    const copiedPages = await pdfDoc.copyPages(externalPdf, externalPdf.getPageIndices());
+                    copiedPages.forEach(page => pdfDoc.addPage(page));
+                }
+
+                const pdfBytes = await pdfDoc.save();
+
+                // Create a Blob and initiate download
+                const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `merged_document_${new Date().toISOString().substring(0, 10)}.pdf`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                
+                alertUser('Merge Successful! Your file is downloading.');
+
+            } catch (error) {
+                console.error('PDF Merging Error:', error);
+                alertUser('Merge Failed. Check the Console for details. Ensure all files are valid PDFs/Images.', 'error');
+            } finally {
+                isMerging = false;
+                document.getElementById('mergeBtn').textContent = 'Merge & Download PDF';
+                updateUI();
+            }
+        }
+
+        function alertUser(message, type = 'success') {
+            // Using a temporary modal/message box instead of alert()
+            const existingAlert = document.getElementById('app-alert');
+            if (existingAlert) existingAlert.remove();
+
+            const alertDiv = document.createElement('div');
+            alertDiv.id = 'app-alert';
+            alertDiv.className = `fixed top-5 right-5 z-50 p-4 rounded-lg shadow-xl text-white ${
+                type === 'success' ? 'bg-green-600' : 'bg-red-600'
+            }`;
+            alertDiv.textContent = message;
+            document.body.appendChild(alertDiv);
+
+            setTimeout(() => {
+                alertDiv.remove();
+            }, 5000);
+        }
+
+        // --- Event Listener Setup ---
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const fileInput = document.getElementById('fileInput');
+            
+            // Link button to hidden file input
+            document.getElementById('fileInputBtn').addEventListener('click', () => fileInput.click());
+            
+            fileInput.addEventListener('change', handleFileSelection);
+            document.getElementById('mergeBtn').addEventListener('click', mergePdfs);
+            document.getElementById('clearBtn').addEventListener('click', () => {
+                files = [];
+                updateUI();
+            });
+
+            // Handle drag-and-drop onto the list area
+            const fileListArea = document.getElementById('fileList');
+            
+            fileListArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                fileListArea.classList.add('drag-over');
+            });
+
+            fileListArea.addEventListener('dragleave', (e) => {
+                e.preventDefault();
+                // Ensure drag-leave is only removed if the mouse leaves the entire list
+                if (!fileListArea.contains(e.relatedTarget)) {
+                    fileListArea.classList.remove('drag-over');
+                }
+            });
+
+            fileListArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                fileListArea.classList.remove('drag-over');
+                processFiles(e.dataTransfer.files);
+            });
+
+            updateUI(); // Initial render
+        });
+    </script>
+</body>
+</html>
